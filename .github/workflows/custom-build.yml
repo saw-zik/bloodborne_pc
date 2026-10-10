@@ -1,0 +1,147 @@
+
+name: Merge PRs and Build Bloodborne
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_numbers:
+        description: "PR numbers separated by commas"
+        required: true
+        type: string
+
+jobs:
+  merge:
+    name: Create combined branch
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    outputs:
+      branch: ${{ steps.combine.outputs.branch }}
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge selected PRs
+        id: combine
+        shell: bash
+        env:
+          PR_NUMBERS: ${{ inputs.pr_numbers }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/Supermedo/bloodborne_pc.git
+          git fetch upstream windows
+
+          branch="custom-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch" FETCH_HEAD
+
+          numbers="${PR_NUMBERS//,/ }"
+
+          for pr in $numbers; do
+            [[ "$pr" =~ ^[0-9]+$ ]] || {
+              echo "Invalid PR number: $pr"
+              exit 1
+            }
+
+            base=$(gh api \
+              "repos/Supermedo/bloodborne_pc/pulls/$pr" \
+              --jq '.base.ref')
+
+            if [[ "$base" != "windows" ]]; then
+              echo "PR #$pr targets $base, not windows"
+              exit 1
+            fi
+
+            echo "Merging PR #$pr"
+
+            git fetch upstream "refs/pull/$pr/head"
+            git merge --no-ff --no-edit FETCH_HEAD
+          done
+
+          git push origin "HEAD:refs/heads/$branch"
+
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "Created branch: $branch" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build Windows package
+    needs: merge
+    runs-on: windows-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout combined branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.merge.outputs.branch }}
+          submodules: recursive
+
+      - name: Setup MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            git
+            patch
+            mingw-w64-clang-x86_64-toolchain
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-vulkan-headers
+            mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-memory-allocator
+            mingw-w64-clang-x86_64-glslang
+            mingw-w64-clang-x86_64-sdl3
+            mingw-w64-clang-x86_64-fmt
+            mingw-w64-clang-x86_64-boost
+            mingw-w64-clang-x86_64-robin-map
+            mingw-w64-clang-x86_64-xxhash
+            mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-zydis
+            mingw-w64-clang-x86_64-spirv-tools
+            mingw-w64-clang-x86_64-spirv-headers
+            mingw-w64-clang-x86_64-spirv-cross
+            mingw-w64-clang-x86_64-protobuf
+            mingw-w64-clang-x86_64-openssl
+            mingw-w64-clang-x86_64-zlib
+            mingw-w64-clang-x86_64-miniupnpc
+            mingw-w64-clang-x86_64-nlohmann-json
+
+      - name: Setup Windows Python
+        id: winpy
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Bloodborne
+        shell: msys2 {0}
+        run: |
+          bash build.sh
+
+      - name: Package Windows build
+        shell: msys2 {0}
+        env:
+          WINPYTHON_WIN: ${{ steps.winpy.outputs.python-path }}
+        run: |
+          export WINPYTHON="$(cygpath -u "$WINPYTHON_WIN")"
+          bash packaging/windows/package.sh
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: bloodborne-custom-windows
+          path: dist/bbport-windows.zip
+          if-no-files-found: error
