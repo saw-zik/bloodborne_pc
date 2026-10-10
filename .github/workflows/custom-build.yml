@@ -128,16 +128,21 @@ jobs:
 
      
 
+      
       - name: Compile Bloodborne
         shell: msys2 {0}
         run: |
           set -euo pipefail
 
-          # Compatibility fixes for FidelityFX under MSYS2 Clang
+          # Compatibility fixes for MSYS2 Clang
           cat > .ci-fsr-compat.hpp <<'EOF'
           #pragma once
-          #include <cwchar>
+
           #include <cstddef>
+          #include <cwchar>
+          #include <new>
+          #include <cmath>
+          #include <math.h>
 
           #if defined(__MINGW32__)
           #ifndef _countof
