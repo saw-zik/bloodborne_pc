@@ -126,10 +126,33 @@ jobs:
         with:
           python-version: "3.12"
 
+     
       - name: Compile Bloodborne
         shell: msys2 {0}
         run: |
-          bash build.sh
+          if bash build.sh; then
+            echo "Compilation successful"
+          else
+            result=$?
+            echo "===== COMPILATION FAILED ====="
+            if [[ -f out/gpu-build.log ]]; then
+              echo "===== LAST 150 LOG LINES ====="
+              tail -n 150 out/gpu-build.log
+            else
+              echo "GPU build log was not created"
+            fi
+
+            exit "$result"
+          fi
+
+      - name: Upload compilation log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-compilation-log
+          path: out/gpu-build.log
+          if-no-files-found: warn
+
 
       - name: Package Windows build
         shell: msys2 {0}
