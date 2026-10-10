@@ -127,23 +127,44 @@ jobs:
           python-version: "3.12"
 
      
+
       - name: Compile Bloodborne
         shell: msys2 {0}
         run: |
+          set -euo pipefail
+
+          # Compatibility fixes for FidelityFX under MSYS2 Clang
+          cat > .ci-fsr-compat.hpp <<'EOF'
+          #pragma once
+          #include <cwchar>
+          #include <cstddef>
+
+          #if defined(__MINGW32__)
+          #ifndef _countof
+          #define _countof(arr) (sizeof(arr) / sizeof((arr)[0]))
+          #endif
+
+          #define swprintf_s swprintf
+          #endif
+          EOF
+
+          export CXXFLAGS="-include $(cygpath -m "$PWD/.ci-fsr-compat.hpp") ${CXXFLAGS:-}"
+
           if bash build.sh; then
             echo "Compilation successful"
           else
             result=$?
+
             echo "===== COMPILATION FAILED ====="
+
             if [[ -f out/gpu-build.log ]]; then
               echo "===== LAST 150 LOG LINES ====="
               tail -n 150 out/gpu-build.log
-            else
-              echo "GPU build log was not created"
             fi
 
             exit "$result"
           fi
+
 
       - name: Upload compilation log
         if: failure()
