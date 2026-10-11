@@ -234,8 +234,6 @@ jobs:
 
           echo "DLSS build successful"
 
-    
-
       - name: Package Windows build
         shell: msys2 {0}
         env:
@@ -244,13 +242,29 @@ jobs:
           export WINPYTHON="$(cygpath -u "$WINPYTHON_WIN")"
           bash packaging/windows/package.sh
           
+      - name: Diagnose DLSS packaging
+        shell: pwsh
+        run: |
+          Write-Host "===== DLSS BUILD OUTPUT ====="
+
+          Get-ChildItem out -Filter "*dlss*" -Recurse |
+            Select-Object FullName, Length
+
+          Write-Host "===== PACKAGED DLL FILES ====="
+
+          Get-ChildItem dist -Filter "*.dll" -Recurse |
+            Where-Object { $_.Name -match "dlss" } |
+            Select-Object FullName, Length    
+          
+
       - name: Verify DLSS in Windows package
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $zipPath = "dist/bbport-windows.zip"
 
           if (-not (Test-Path $zipPath)) {
-            throw "Windows package was not created"
+            throw "ZIP archive not found: $zipPath"
           }
 
           Add-Type -AssemblyName System.IO.Compression
@@ -260,11 +274,15 @@ jobs:
           )
 
           try {
-            $names = @(
-              $archive.Entries | ForEach-Object {
-                $_.FullName
+            $entries = @($archive.Entries)
+
+            Write-Host "===== DLSS FILES IN ARCHIVE ====="
+
+            $entries |
+              Where-Object { $_.FullName -match "dlss" } |
+              ForEach-Object {
+                Write-Host "$($_.FullName) ($($_.Length) bytes)"
               }
-            )
 
             $required = @(
               "bbport_dlss.dll",
@@ -273,8 +291,11 @@ jobs:
 
             foreach ($dll in $required) {
               $found = @(
-                $names | Where-Object {
-                  $_ -like "*/bin/$dll"
+                $entries | Where-Object {
+                  $normalized = $_.FullName.Replace('\', '/')
+                  $filename = $normalized.Split('/')[-1]
+
+                  $filename -ieq $dll -and $_.Length -gt 0
                 }
               )
 
@@ -282,14 +303,17 @@ jobs:
                 throw "Missing DLL in archive: $dll"
               }
 
-              Write-Host "Verified: $dll"
+              foreach ($entry in $found) {
+                Write-Host "OK: $($entry.FullName)"
+              }
             }
+
+            Write-Host "DLSS verification successful"
           }
           finally {
             $archive.Dispose()
           }
 
-          Write-Host "DLSS package verification passed"     
 
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v4
