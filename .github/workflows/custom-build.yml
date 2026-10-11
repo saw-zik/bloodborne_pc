@@ -92,7 +92,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANG64
-          location: 'C:\'
+          release: false
           update: true
           install: >-
             git
