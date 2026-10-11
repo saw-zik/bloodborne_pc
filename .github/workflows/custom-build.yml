@@ -75,7 +75,7 @@ jobs:
   build:
     name: Build Windows package
     needs: merge
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     permissions:
       contents: read
@@ -88,9 +88,11 @@ jobs:
           submodules: recursive
 
       - name: Setup MSYS2 CLANG64
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANG64
+          location: 'C:\'
           update: true
           install: >-
             git
@@ -125,10 +127,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-     
-
-      
+ 
      
       - name: Compile Bloodborne
         shell: msys2 {0}
@@ -157,7 +156,78 @@ jobs:
           name: gpu-compilation-log
           path: out/gpu-build.log
           if-no-files-found: warn
+      
 
+      - name: Download NVIDIA DLSS SDK
+        shell: pwsh
+        run: |
+          $sdk = Join-Path $env:RUNNER_TEMP "NVIDIA-DLSS"
+
+          git clone --depth 1 `
+            https://github.com/NVIDIA/DLSS.git `
+            "$sdk"
+
+          $runtime = Join-Path $sdk "lib/Windows_x86_64/rel/nvngx_dlss.dll"
+          $license = Join-Path $sdk "LICENSE.txt"
+
+          if (-not (Test-Path $runtime)) {
+            throw "NVIDIA DLSS runtime not found"
+          }
+
+          if ((Get-Item $runtime).Length -lt 1MB) {
+            throw "NVIDIA DLSS runtime is unexpectedly small"
+          }
+
+          if (-not (Test-Path $license)) {
+            throw "NVIDIA DLSS license not found"
+          }
+
+          $cmake = (Get-Command cmake.exe -ErrorAction Stop).Source
+
+          if ($cmake -match '[\\/]msys64[\\/]') {
+            throw "Expected native Windows CMake, got: $cmake"
+          }
+
+          "DLSS_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
+          "CMAKE_EXE_WIN=$cmake" >> $env:GITHUB_ENV
+
+          Write-Host "NVIDIA SDK: $sdk"
+          Write-Host "Windows CMake: $cmake"
+
+      - name: Setup MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+          vsversion: "2022"
+
+      - name: Build DLSS bridge
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+
+          export DLSS_SDK_ROOT="$(cygpath -u "$DLSS_SDK_ROOT")"
+          export CMAKE_EXE="$(cygpath -u "$CMAKE_EXE_WIN")"
+
+          echo "Checking Vulkan headers..."
+
+          test -d /c/msys64/clang64/include/vulkan
+          test -d /c/msys64/clang64/include/vk_video
+
+          echo "Building NVIDIA DLSS bridge..."
+
+          bash packaging/windows/build_dlss.sh
+
+          echo "Verifying DLSS build outputs..."
+
+          test -s out/bbport_dlss.dll
+          test -s out/nvngx_dlss.dll
+          test -s out/NVIDIA-DLSS-LICENSE.txt
+
+          echo "DLSS build successful"
+
+    
 
       - name: Package Windows build
         shell: msys2 {0}
@@ -166,6 +236,53 @@ jobs:
         run: |
           export WINPYTHON="$(cygpath -u "$WINPYTHON_WIN")"
           bash packaging/windows/package.sh
+          
+      - name: Verify DLSS in Windows package
+        shell: pwsh
+        run: |
+          $zipPath = "dist/bbport-windows.zip"
+
+          if (-not (Test-Path $zipPath)) {
+            throw "Windows package was not created"
+          }
+
+          Add-Type -AssemblyName System.IO.Compression
+
+          $archive = [System.IO.Compression.ZipFile]::OpenRead(
+            (Resolve-Path $zipPath).Path
+          )
+
+          try {
+            $names = @(
+              $archive.Entries | ForEach-Object {
+                $_.FullName
+              }
+            )
+
+            $required = @(
+              "bbport_dlss.dll",
+              "nvngx_dlss.dll"
+            )
+
+            foreach ($dll in $required) {
+              $found = @(
+                $names | Where-Object {
+                  $_ -like "*/bin/$dll"
+                }
+              )
+
+              if ($found.Count -eq 0) {
+                throw "Missing DLL in archive: $dll"
+              }
+
+              Write-Host "Verified: $dll"
+            }
+          }
+          finally {
+            $archive.Dispose()
+          }
+
+          Write-Host "DLSS package verification passed"     
 
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v4
