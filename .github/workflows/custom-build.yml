@@ -200,6 +200,13 @@ jobs:
           arch: amd64
           vsversion: "2022"
 
+      - name: Verify MSYS2 paths
+        shell: msys2 {0}
+        run: |
+          echo "MSYS2 location: $(cygpath -w /)"
+          test -d /c/msys64/clang64/include/vulkan
+          test -d /c/msys64/clang64/include/vk_video
+
       - name: Build DLSS bridge
         shell: msys2 {0}
         env:
